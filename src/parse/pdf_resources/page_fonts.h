@@ -3,6 +3,11 @@
 #ifndef PDF_PAGE_FONTS_RESOURCE_H
 #define PDF_PAGE_FONTS_RESOURCE_H
 
+#include <cstdlib>
+#include <map>
+#include <memory>
+#include <tuple>
+
 namespace pdflib
 {
 
@@ -31,7 +36,10 @@ namespace pdflib
   private:
 
     std::shared_ptr<pdf_resource<PAGE_FONTS>> parent_;
-    std::unordered_map<std::string, pdf_resource<PAGE_FONT> > page_fonts;
+
+    // Parsed fonts are held by shared_ptr and memoized (see set()); they are
+    // read-only after parsing, so a single instance can be shared safely.
+    std::unordered_map<std::string, std::shared_ptr<pdf_resource<PAGE_FONT> > > page_fonts;
   };
 
   pdf_resource<PAGE_FONTS>::pdf_resource():
@@ -51,7 +59,7 @@ namespace pdflib
     {
       for(auto itr=page_fonts.begin(); itr!=page_fonts.end(); itr++)
         {
-          result[itr->first] = (itr->second).get();
+          result[itr->first] = (itr->second)->get();
         }
     }
     
@@ -97,7 +105,7 @@ namespace pdflib
   {
     if(page_fonts.count(font_name)==1)
       {
-        return page_fonts.at(font_name);
+        return *(page_fonts.at(font_name));
       }
 
     if(parent_)
@@ -123,13 +131,45 @@ namespace pdflib
       throw std::logic_error(ss.str());
     }
 
-    return (page_fonts.begin()->second);
+    return *(page_fonts.begin()->second);
   }
-  
+
+  // Memoization cache for parsed fonts.
+  //
+  // do_form() re-parses the invoked form-XObject's fonts on every invocation.
+  // Pathological pages stamp the same handful of form XObjects hundreds of
+  // thousands of times, all referencing the same (indirect) font objects, so
+  // the same fonts would otherwise be re-serialized (to_json) and re-parsed
+  // (encoding/cmap/widths and several std::regex compiles) millions of times
+  // per page. A parsed font is a pure, read-only function of (font object,
+  // local font key), so it is memoized here by (owning QPDF, object id+gen,
+  // key) and shared via shared_ptr.
+  //
+  // The 'key' is part of the cache key because two local names may point at the
+  // same font object; the parsed font records its font_key, and downstream
+  // (enforce_same_font) merging distinguishes cells by it.
+  //
+  // The cache is thread_local and scoped to a single document: it is cleared
+  // whenever the owning QPDF changes. This keeps it correct across sequential
+  // documents (object ids are only unique within one document) and race-free on
+  // the threaded parser path. Only indirect font objects are cached. Disable
+  // with the environment variable DP_DISABLE_FONT_CACHE=1.
+  static bool dp_font_cache_enabled()
+  {
+    static const bool enabled = (std::getenv("DP_DISABLE_FONT_CACHE") == nullptr);
+    return enabled;
+  }
+
   void pdf_resource<PAGE_FONTS>::set(QPDFObjectHandle& qpdf_fonts,
                                      pdf_timings& timings)
   {
     LOG_S(INFO) << __FUNCTION__;
+
+    static thread_local QPDF* font_cache_owner = nullptr;
+    static thread_local std::map<std::tuple<QPDFObjGen, std::string>,
+                                 std::shared_ptr<pdf_resource<PAGE_FONT> > > font_cache;
+
+    const bool cache_on = dp_font_cache_enabled();
 
     double total_font_time = 0.0;
 
@@ -140,12 +180,40 @@ namespace pdflib
 	utils::timer font_timer;
 
 	QPDFObjectHandle qpdf_font = qpdf_fonts.getKey(key);
-	nlohmann::json json_font = to_json(qpdf_font);
 
-	LOG_S(INFO) << json_font.dump(2);
-	
-	pdf_resource<PAGE_FONT> page_font(timings);
-	page_font.set(key, json_font, qpdf_font);
+	const bool cacheable = cache_on && qpdf_font.isIndirect();
+
+	std::shared_ptr<pdf_resource<PAGE_FONT> > page_font;
+
+	if(cacheable)
+	  {
+	    QPDF* owner = qpdf_font.getOwningQPDF();
+	    if(owner != font_cache_owner)
+	      {
+		font_cache.clear();
+		font_cache_owner = owner;
+	      }
+
+	    auto ck = std::make_tuple(qpdf_font.getObjGen(), key);
+	    auto itr = font_cache.find(ck);
+	    if(itr != font_cache.end())
+	      {
+		page_font = itr->second;
+	      }
+	    else
+	      {
+		nlohmann::json json_font = to_json(qpdf_font);
+		page_font = std::make_shared<pdf_resource<PAGE_FONT> >(timings);
+		page_font->set(key, json_font, qpdf_font);
+		font_cache[ck] = page_font;
+	      }
+	  }
+	else
+	  {
+	    nlohmann::json json_font = to_json(qpdf_font);
+	    page_font = std::make_shared<pdf_resource<PAGE_FONT> >(timings);
+	    page_font->set(key, json_font, qpdf_font);
+	  }
 
 	if(page_fonts.count(key)==1)
 	  {
@@ -153,7 +221,7 @@ namespace pdflib
 	    page_fonts.erase(key);
 	  }
 
-	page_fonts.emplace(key, std::move(page_font));
+	page_fonts.emplace(key, page_font);
 
 	double font_time = font_timer.get_time();
 	total_font_time += font_time;

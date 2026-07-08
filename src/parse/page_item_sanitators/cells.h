@@ -347,7 +347,7 @@ namespace pdflib
       }
 
     {
-      std::regex pattern(R"(^\/([A-Za-z])_([A-Za-z])(_([A-Za-z]))?$)");
+      static const std::regex pattern(R"(^\/([A-Za-z])_([A-Za-z])(_([A-Za-z]))?$)");
 
       for(int i=0; i<cells.size(); i++)
 	{

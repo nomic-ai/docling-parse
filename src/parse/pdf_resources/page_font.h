@@ -2207,10 +2207,10 @@ namespace pdflib
     std::vector<std::string> keys = { "/Encoding", "/Differences" };
 
     // Create a regex object
-    std::regex re_01(R"(\/(.+)\.(.+))");
-    std::regex re_02(R"((\/)?(uni|UNI)([0-9A-Fa-f]{4}))");
-    std::regex re_03(R"((\/)(g|G)\d+)");
-    std::regex re_04(R"((\/)(C)(\d+))");
+    static const std::regex re_01(R"(\/(.+)\.(.+))");
+    static const std::regex re_02(R"((\/)?(uni|UNI)([0-9A-Fa-f]{4}))");
+    static const std::regex re_03(R"((\/)(g|G)\d+)");
+    static const std::regex re_04(R"((\/)(C)(\d+))");
     
     if(utils::json::has(keys, json_font))
       {

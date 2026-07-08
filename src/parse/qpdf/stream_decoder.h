@@ -33,18 +33,14 @@ namespace pdflib
 
     std::vector<qpdf_stream_instruction>& stream;
 
-    std::regex value_pattern_0;
-    std::regex value_pattern_1;
-    std::regex value_pattern_2;
+    inline static const std::regex value_pattern_0{R"(^(\d\.\d+)(\-\d+)$)"};
+    inline static const std::regex value_pattern_1{R"(^((\-)?\d+\.\d*)(\-)(\d*)$)"}; // numbers with a random `-` in the middle
+    inline static const std::regex value_pattern_2{R"(^(\-)+((\-)\d+(\.)?(\d*))(\-)?(\d*)$)"}; // numbers with multiple `-` as start
   };
 
   qpdf_stream_decoder::qpdf_stream_decoder(std::vector<qpdf_stream_instruction>& stream_):
     QPDFObjectHandle::ParserCallbacks(),
-    stream(stream_),
-
-    value_pattern_0(R"(^(\d\.\d+)(\-\d+)$)"),
-    value_pattern_1(R"(^((\-)?\d+\.\d*)(\-)(\d*)$)"), // need to deal with numbers that have random `-` in the middle 
-    value_pattern_2(R"(^(\-)+((\-)\d+(\.)?(\d*))(\-)?(\d*)$)") // need to deal with numbers that have multiple `-` as start 
+    stream(stream_)
   {}
 
   qpdf_stream_decoder::~qpdf_stream_decoder()

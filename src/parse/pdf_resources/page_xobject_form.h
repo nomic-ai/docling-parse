@@ -3,6 +3,9 @@
 #ifndef PDF_PAGE_XOBJECT_FORM_RESOURCE_H
 #define PDF_PAGE_XOBJECT_FORM_RESOURCE_H
 
+#include <mutex>
+#include <vector>
+
 namespace pdflib
 {
 
@@ -62,6 +65,15 @@ namespace pdflib
 
     std::array<double, 6> matrix;
     std::array<double, 4> bbox;
+
+    // A form XObject is frequently invoked thousands of times per page, and
+    // (with the xobject_parse_cache) a single parsed form instance is reused
+    // across those invocations. Tokenizing its content stream is expensive, so
+    // memoize it and tokenize at most once. std::call_once keeps this correct
+    // even if a form instance is ever shared across threads; within a single
+    // page decode it is effectively lock-free after the first call.
+    mutable std::once_flag stream_once_;
+    mutable std::vector<qpdf_stream_instruction> stream_cache_;
   };
 
   pdf_resource<PAGE_XOBJECT_FORM>::pdf_resource()
@@ -193,27 +205,29 @@ namespace pdflib
 
   std::vector<qpdf_stream_instruction> pdf_resource<PAGE_XOBJECT_FORM>::parse_stream() const
   {
-    std::vector<qpdf_stream_instruction> stream;
-
-    // decode the stream
-    try
+    // Tokenize at most once per form instance; reused across all invocations.
+    std::call_once(stream_once_, [this]()
       {
-        qpdf_stream_decoder decoder(stream);
-        QPDFObjectHandle qpdf_xobject_ = qpdf_xobject;
-        decoder.decode(qpdf_xobject_);
+        // decode the stream
+        try
+          {
+            qpdf_stream_decoder decoder(stream_cache_);
+            QPDFObjectHandle qpdf_xobject_ = qpdf_xobject;
+            decoder.decode(qpdf_xobject_);
 
-        decoder.print();
-      }
-    catch(const std::exception& exc)
-      {
-        std::stringstream ss;
-        ss << "encountered an error: " << exc.what();
-        LOG_S(ERROR) << ss.str();
-	
-        throw std::logic_error(ss.str());
-      }
+            decoder.print();
+          }
+        catch(const std::exception& exc)
+          {
+            std::stringstream ss;
+            ss << "encountered an error: " << exc.what();
+            LOG_S(ERROR) << ss.str();
 
-    return stream;
+            throw std::logic_error(ss.str());
+          }
+      });
+
+    return stream_cache_;
   }
 
   void pdf_resource<PAGE_XOBJECT_FORM>::parse_matrix()
